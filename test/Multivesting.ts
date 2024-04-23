@@ -1,6 +1,7 @@
 import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { expect } from "chai";
 import { ethers, network, upgrades } from "hardhat";
+import logdown from "logdown";
 
 describe("Multivesting", function () {
   async function fixture() {
@@ -20,52 +21,106 @@ describe("Multivesting", function () {
   it("Should add vesting", async function () {
     const { multivesting, infffinity, owner, beneficiary } = await loadFixture(fixture);
 
-    const tokenAmount = 1000;
+    // @dev check address
+    let logger = logdown("Address");
+    logger.state.isEnabled = true;
+    logger.info(`Owner \`${owner.address}\``);
+    logger.info(`Beneficiary \`${beneficiary.address}\``);
+    logger.info(`Multivesting \`${await multivesting.getAddress()}\``);
+    logger.info(`Infffinity \`${await infffinity.getAddress()}\``);
+
+    const tokenAmount = ethers.parseEther("10000");
     const totalMonth = 12;
     const startedAt = Math.floor(Date.now() / 1000);
 
+    // @dev check variables
+    logger = logdown("Variables");
+    logger.state.isEnabled = true;
+    logger.info(`Token Amount: \`${tokenAmount.toString()}\``);
+    logger.info(`Total Month: \`${totalMonth}\``);
+    logger.info(`Started At: \`${startedAt}\``);
+
     // Approve Multivesting contract to spend tokens on behalf of the owner
     await infffinity.connect(owner).approve(await multivesting.getAddress(), tokenAmount);
-
-    // Transfer tokens to Multivesting contract
-    await infffinity.transfer(await multivesting.getAddress(), tokenAmount);
 
     // Add vesting
     await multivesting.connect(owner).addVesting(beneficiary.address, tokenAmount, totalMonth, startedAt);
 
     const vestingDetails = await multivesting.VestingMap(beneficiary.address, 0);
+    const contractBalance = await infffinity.balanceOf(await multivesting.getAddress());
 
+    // @dev check vesting details
+    logger = logdown("Contract");
+    logger.state.isEnabled = true;
+    logger.log(`Contract Balance: \`${contractBalance.toString()}\``);
+
+    expect(contractBalance).to.equal(tokenAmount);
+    expect(vestingDetails.tokenAmount).to.equal(tokenAmount);
     expect(vestingDetails.startedAt).to.equal(startedAt);
     expect(vestingDetails.lastVestTimestamp).to.equal(0);
     expect(vestingDetails.totalMonth).to.equal(totalMonth);
   });
 
-  it("Should claim vested tokens", async function () {
+  it("Should claim vested tokens for every month", async function () {
     const { multivesting, infffinity, owner, beneficiary } = await loadFixture(fixture);
 
-    const tokenAmount = 10000;
-    const totalMonth = 12;
-    const startedAt = Math.floor(Date.now() / 1000);
+    let logger = logdown("Address");
+    logger.state.isEnabled = true;
+    logger.info(`Owner \`${owner.address}\``);
+    logger.info(`Beneficiary \`${beneficiary.address}\``);
+    logger.info(`Multivesting \`${await multivesting.getAddress()}\``);
+    logger.info(`Infffinity \`${await infffinity.getAddress()}\``);
 
-    // Transfer tokens to Multivesting contract
-    await infffinity.transfer(owner.address, tokenAmount);
+    const tokenAmount = ethers.parseEther("50000000");
+    const totalMonth = 38;
+    const cliffMonth = 2;
+    const startedAt = Math.floor(Date.now() / 1000) + (cliffMonth * (30 * 24 * 3600));
+
+    logger = logdown("Variables");
+    logger.state.isEnabled = true;
+    logger.info(`tokenAmount: \`${tokenAmount}\``);
+    logger.info(`totalMonth: \`${totalMonth}\``);
+    logger.info(`cliffMonth: \`${cliffMonth}\``);
+    logger.info(`startedAt: \`${startedAt}\``);
 
     // Approve Multivesting contract to spend tokens on behalf of the beneficiary
-    await infffinity.connect(beneficiary).approve(await multivesting.getAddress(), tokenAmount);
     await infffinity.connect(owner).approve(await multivesting.getAddress(), tokenAmount);
 
     // Add vesting
     await multivesting.connect(owner).addVesting(beneficiary.address, tokenAmount, totalMonth, startedAt);
 
     // Advance time to simulate vesting period completion
-    await network.provider.send("evm_increaseTime", [totalMonth * 30 * 24 * 3600]);
-    await network.provider.send("evm_mine");
+    const initialAmount = (tokenAmount * BigInt(27)) / BigInt(100);
+    const increaseAmount = (tokenAmount - initialAmount) / BigInt(totalMonth);
+    let vestedAmount = initialAmount;
 
-    // Claim vested tokens
-    await multivesting.connect(beneficiary).claim();
+    logger = logdown("Vesting Details");
+    logger.state.isEnabled = true;
+    // Increase time by 1 month
+    for (var i = 0 ; i < totalMonth + cliffMonth ; i++) {
+      await network.provider.send("evm_increaseTime", [1 * 30 * 24 * 3600]);
+      await network.provider.send("evm_mine");
 
-    // Check beneficiary's balance
-    const beneficiaryBalance = await infffinity.balanceOf(beneficiary.address);
-    expect(beneficiaryBalance).to.equal(tokenAmount);
+      if (i < cliffMonth) {
+        logger.log(`Cliff Month: \`${i+1}\``);
+        continue;
+      }
+      logger.log(`Vesting Month: \`${i+1}\``);
+
+      // Claim vested tokens
+      await multivesting.connect(beneficiary).claim();
+
+      // Check beneficiary's balance
+      const beneficiaryBalance = await infffinity.balanceOf(beneficiary.address);
+      logger.log(`Beneficiary Balance: \`${beneficiaryBalance.toString()}\``);
+
+      // Check expected vested amount after each month's claim
+      if (i === 1) {
+        expect(beneficiaryBalance).to.equal(initialAmount);
+      } else {
+        vestedAmount += increaseAmount;
+        expect(beneficiaryBalance).to.equal(vestedAmount);
+      }
+    }
   });
 })

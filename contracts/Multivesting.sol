@@ -5,6 +5,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import "hardhat/console.sol";
+
 contract Multivesting is Ownable {
     using SafeERC20 for IERC20;
 
@@ -12,10 +14,13 @@ contract Multivesting is Ownable {
     // @param startedAt - Timestamp when vesting started
     // @param lastVestTimestamp - Timestamp when last vesting was done
     // @param totalMonth - Total months of vesting
+    // @param tokenAmount - Amount of INF vested to the account
     struct Vesting {
         uint256 startedAt;
         uint256 lastVestTimestamp;
         uint256 totalMonth;
+        uint256 tokenAmount;
+        uint256 releasedTokenAmount;
     }
 
     // @notice INF Token address
@@ -34,7 +39,7 @@ contract Multivesting is Ownable {
     // @param _beneficiary - Beneficiary address
     // @param _tokenAmount - Amount of INF
     // @param _totalMonth - Total months of vesting
-    // @param _startedAt - Timestamp when vesting started
+    // @param _startedAt - Timestamp when first vesting started
     // @notice Only owner can add vesting
     // @notice Token amount must be greater than 0
     // @notice Total month must be greater than 0
@@ -53,7 +58,9 @@ contract Multivesting is Ownable {
         Vesting memory v = Vesting({
             startedAt: _startedAt,
             lastVestTimestamp: 0,
-            totalMonth: _totalMonth
+            totalMonth: _totalMonth,
+            tokenAmount: _tokenAmount,
+            releasedTokenAmount: 0
         });
 
         token.safeTransferFrom(msg.sender, address(this), _tokenAmount);
@@ -65,6 +72,7 @@ contract Multivesting is Ownable {
     // @notice beneficiary must have vesting
     function claim() external {
         address beneficiary = msg.sender;
+        uint256 totalAvailableAmount = 0;
         uint256 totalVesting = VestingMap[beneficiary].length;
 
         require(
@@ -76,17 +84,25 @@ contract Multivesting is Ownable {
             Vesting storage vesting = VestingMap[beneficiary][i];
 
             // Calculate the amount of vested tokens based on the vesting schedule
-            uint256 vestedAmount = calculateVestedAmount(vesting);
+            uint256 availableAmount = calculateVestedAmount(vesting);
 
             // Ensure that there are vested tokens to claim
-            require(vestedAmount > 0, "No vested tokens available for claim");
+            require(availableAmount > 0, "No vested tokens available for claim");
 
             // Update the last vesting timestamp
             vesting.lastVestTimestamp = block.timestamp;
 
-            // Transfer the vested tokens to the beneficiary
-            token.safeTransfer(beneficiary, vestedAmount);
+            // Update the total released amount
+            vesting.releasedTokenAmount += availableAmount;
+
+            // Add available amount
+            totalAvailableAmount += availableAmount;
         }
+
+        // console.log(totalAvailableAmount / 1 ether);
+
+        // Transfer the available amount to the beneficiary
+        token.safeTransfer(beneficiary, totalAvailableAmount);
     }
 
     // @notice Calculate the amount of vested tokens based on the vesting schedule
@@ -95,33 +111,29 @@ contract Multivesting is Ownable {
     function calculateVestedAmount(
         Vesting storage vesting
     ) internal view returns (uint256) {
-        uint256 elapsedTime = block.timestamp - vesting.startedAt;
-        uint256 vestingDuration = vesting.totalMonth * 30 days;
-
-        // Calculate the vested percentage based on elapsed time and total vesting duration
-        uint256 vestedPercentage = (elapsedTime * 100) / vestingDuration;
-
-        // Ensure vested percentage does not exceed 100%
-        if (vestedPercentage > 100) {
-            vestedPercentage = 100;
+        // Check if the vesting has started
+        if (block.timestamp < vesting.startedAt) {
+            return 0;
         }
 
-        // Calculate the vested amount
-        uint256 vestedAmount = (vestedPercentage *
-            token.balanceOf(address(this))) / 100;
+        // Initiate calculation variable
+        uint256 elapsedMonth = (block.timestamp - vesting.startedAt) /
+            30 days;
+        uint256 initialAmount = ((vesting.tokenAmount * 27) / 100);
+        uint256 vestingAmount = initialAmount;
+        uint256 tokenAmount_ = vesting.tokenAmount;
 
-        // Exclude already claimed amount
-        if (vesting.lastVestTimestamp > 0) {
-            uint256 lastVestElapsedTime = block.timestamp -
-                vesting.lastVestTimestamp;
-            uint256 lastVestPercentage = (lastVestElapsedTime * 100) /
-                vestingDuration;
-            uint256 lastVestAmount = (lastVestPercentage *
-                token.balanceOf(address(this))) / 100;
-
-            vestedAmount -= lastVestAmount;
+        // Return initial amount if elapsed month is no more than one
+        if (elapsedMonth == 0) {
+            return initialAmount;
         }
 
-        return vestedAmount;
+        // Add the rest of vesting calculation based on elapsed month
+        for (uint i = 0 ; i < elapsedMonth ; i++) {
+            vestingAmount += (tokenAmount_ - initialAmount) / vesting.totalMonth;
+        }
+
+        // Return amount after reduced by released amount
+        return (vestingAmount - vesting.releasedTokenAmount);
     }
 }
